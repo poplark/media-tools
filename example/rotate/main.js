@@ -15,7 +15,7 @@ async function run() {
 
     const rotator = new Rotator(originalTrack);
 
-    const videoTrack = await rotator.capture(0);
+    const videoTrack = await rotator.capture(angle);
     const newStream = new MediaStream();
     newStream.addTrack(videoTrack);
 
