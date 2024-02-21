@@ -26,8 +26,8 @@ const cancelAnimationFrame =
 
 export function getAF(
     frameRate = 20,
-    forceUseSetTimeout?: boolean,
-): [(callback: FrameRequestCallback) => number, (handle: number) => void] {
+    forceUseSetTimeout = false,
+): [(callback: FrameRequestCallback) => number, (handle: number) => void, boolean] {
     let raf = function (callback: FrameRequestCallback): number {
         let interval = 1000 / frameRate;
         if (interval < 50) {
@@ -35,10 +35,13 @@ export function getAF(
         }
         return window.setTimeout(callback, interval);
     };
-    let caf = window.clearTimeout as (handle: number) => void;
+    let caf = function (id: number) {
+        return window.clearTimeout(id);
+    }
     raf = forceUseSetTimeout ? raf : requestAnimationFrame ? requestAnimationFrame.bind(window) : raf;
     caf = forceUseSetTimeout ? caf : cancelAnimationFrame ? cancelAnimationFrame.bind(window) : caf;
-    return [raf, caf];
+    const isOriginalRAF = forceUseSetTimeout ? false : !!requestAnimationFrame;
+    return [raf, caf, isOriginalRAF];
 }
 
 export class Rotator {
@@ -53,6 +56,7 @@ export class Rotator {
 
     private raf: (callback: FrameRequestCallback) => number;
     private caf: (handle: number) => void;
+    private isOriginalRAF = false;
     private renderTimer: number = 0;
 
     private angle = 0;
@@ -70,21 +74,53 @@ export class Rotator {
         this.canvas.height = height;
         this.ctx = this.canvas.getContext('2d');
 
-        [this.raf, this.caf] = getAF(this.frameRate);
+        [this.raf, this.caf, this.isOriginalRAF] = getAF(this.frameRate);
 
         this.videoElem = document.createElement('video');
+        this.videoElem.setAttribute('playsinline', '');
+        this.videoElem.setAttribute('webkit-playsinline', '');  // 针对一些老版本的 Safari
         this.videoElem.srcObject = this.mediaStream;
 
         const self = this;
-        this.videoElem.onplay = function(): void {
+        this.videoElem.onplay = function() {
             self.startRenderFrame();
+        }
+        this.videoElem.onpause = function() {
+            console.warn('video paused');
+            if (self.videoElem.srcObject) {
+                // try to resume playing
+                self.videoElem.play().catch((err) => {
+                    console.warn('video play err', err);
+                });
+            }
         }
         track.onended = function() {
             self.stopRenderFrame();
         }
+        document.addEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+
+    private handleVisibilityChange = () => {
+        if (document.hidden) {
+            // requestAnimationFrame 降级成 setTimeout
+            const [raf, caf, isOriginalRAF] = getAF(this.frameRate, true);
+            if (isOriginalRAF !== this.isOriginalRAF) {
+                this.stopRenderFrame();
+                [this.raf, this.caf, this.isOriginalRAF] = [raf, caf, isOriginalRAF];
+                this.startRenderFrame();
+            }
+        } else {
+            const [raf, caf, isOriginalRAF] = getAF(this.frameRate);
+            if (isOriginalRAF !== this.isOriginalRAF) {
+                this.stopRenderFrame();
+                [this.raf, this.caf, this.isOriginalRAF] = [raf, caf, isOriginalRAF];
+                this.startRenderFrame();
+            }
+        }
     }
 
     private startRenderFrame() {
+        this.renderTimer && this.caf(this.renderTimer);
         this.ctx?.clearRect(0, 0, this.width, this.height);
         // 保存当前状态
         this.ctx?.save();
@@ -93,7 +129,15 @@ export class Rotator {
         // 旋转
         this.ctx?.rotate((this.angle * Math.PI) / 180);
         // 将视频画面绘制到 Canvas 上
-        this.ctx?.drawImage(this.videoElem, -this.width / 2, -this.height / 2, this.width, this.height);
+        let width = this.width;
+        let height = this.height;
+        let originalWidth = this.videoElem.videoWidth;
+        if (width !== originalWidth && this.angle % 180 !== 0) {
+            const p = width;
+            width = height;
+            height = p;
+        }
+        this.ctx?.drawImage(this.videoElem, -width / 2, -height / 2, width, height);
         // 恢复之前保存的状态
         this.ctx?.restore();
         this.renderTimer = this.raf(this.startRenderFrame.bind(this));
@@ -125,10 +169,15 @@ export class Rotator {
     }
 
     destroy() {
+        document.removeEventListener('visibilitychange', this.handleVisibilityChange);
         this.stopCapture();
         const tracks = this.mediaStream.getTracks();
         for (const track of tracks) {
             track.stop();
+        }
+        this.videoElem.srcObject = null;
+        if (typeof this.videoElem.remove === 'function') {
+            this.videoElem.remove();
         }
     }
 }
