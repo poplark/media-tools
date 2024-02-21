@@ -64,6 +64,15 @@ export class Rotator {
         this._videoElem.onplay = function() {
             self._startRenderFrame();
         }
+        this._videoElem.onpause = function() {
+            // 解决 iOS 里自动停止播放的问题
+            console.warn('video paused');
+            if (self._videoElem.srcObject) {
+                self._videoElem.play().catch(err => {
+                    console.warn('try to resume the playing failed', err);
+                });
+            }
+        }
         track.onended = function() {
             self._stopRenderFrame();
         }
